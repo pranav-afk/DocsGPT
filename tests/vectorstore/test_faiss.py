@@ -1,7 +1,21 @@
 import io
+import os
 from unittest.mock import Mock, patch
 
 import pytest
+
+
+def _configure_settings(mock_settings, embeddings_name="test_model", index_type="flat"):
+    """Apply vector-store settings used by FaissStore unit tests.
+
+    Existing tests default to ``flat`` so they exercise the historical
+    ``FAISS.from_documents`` path. HNSW-specific tests override ``index_type``.
+    """
+    mock_settings.EMBEDDINGS_NAME = embeddings_name
+    mock_settings.FAISS_INDEX_TYPE = index_type
+    mock_settings.FAISS_HNSW_M = 16
+    mock_settings.FAISS_HNSW_EF_CONSTRUCTION = 200
+    mock_settings.FAISS_HNSW_EF_SEARCH = 64
 
 
 @pytest.fixture
@@ -50,7 +64,7 @@ class TestFaissStoreInit:
     )
     @patch("application.vectorstore.faiss.settings")
     def test_init_with_docs(self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -74,7 +88,7 @@ class TestFaissStoreInit:
     def test_init_missing_index_files(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_storage = Mock()
@@ -99,7 +113,7 @@ class TestFaissStoreSearch:
     def test_search_delegates_to_docsearch(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -127,7 +141,7 @@ class TestFaissStoreSearch:
     ):
         # FAISS has no relevance-threshold knob; the per-source score_threshold
         # must be safely dropped, not forwarded (which would crash langchain).
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_get_emb.return_value = Mock(dimension=3)
         mock_ds = Mock()
         mock_ds.index = Mock(d=3)
@@ -156,7 +170,7 @@ class TestFaissStoreAddTexts:
     def test_add_texts_delegates(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -182,7 +196,7 @@ class TestFaissStoreGetChunks:
     )
     @patch("application.vectorstore.faiss.settings")
     def test_get_chunks(self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
 
@@ -212,7 +226,7 @@ class TestFaissStoreGetChunks:
     )
     @patch("application.vectorstore.faiss.settings")
     def test_get_chunks_empty(self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -239,7 +253,7 @@ class TestFaissStoreSaveLocal:
     def test_save_local_with_path(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -275,7 +289,7 @@ class TestFaissStoreDeleteIndex:
     def test_delete_index_delegates(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -302,8 +316,9 @@ class TestFaissStoreAssertEmbeddingDimensions:
     def test_dimension_mismatch_raises(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = (
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
+        _configure_settings(
+            mock_settings,
+            embeddings_name="huggingface_sentence-transformers/all-mpnet-base-v2",
         )
         mock_emb = Mock(dimension=768)
         mock_get_emb.return_value = mock_emb
@@ -327,8 +342,9 @@ class TestFaissStoreAssertEmbeddingDimensions:
     def test_missing_dimension_attr_raises(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = (
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
+        _configure_settings(
+            mock_settings,
+            embeddings_name="huggingface_sentence-transformers/all-mpnet-base-v2",
         )
         mock_emb = Mock(spec=[])  # No dimension attribute
         mock_get_emb.return_value = mock_emb
@@ -353,7 +369,7 @@ class TestFaissStoreDeleteChunk:
     )
     @patch("application.vectorstore.faiss.settings")
     def test_delete_chunk(self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -378,7 +394,7 @@ class TestGetVectorstore:
     def test_with_path(self):
         from application.vectorstore.faiss import get_vectorstore
 
-        assert get_vectorstore("abc123") == "indexes/abc123"
+        assert get_vectorstore("abc123") == os.path.join("indexes", "abc123")
 
     def test_without_path(self):
         from application.vectorstore.faiss import get_vectorstore
@@ -389,7 +405,9 @@ class TestGetVectorstore:
     def test_with_nested_path(self):
         from application.vectorstore.faiss import get_vectorstore
 
-        assert get_vectorstore("user/source123") == "indexes/user/source123"
+        assert get_vectorstore("user/source123") == os.path.join(
+            "indexes", "user", "source123"
+        )
 
     @pytest.mark.parametrize(
         "malicious_path",
@@ -411,7 +429,9 @@ class TestGetVectorstore:
     def test_allows_mongodb_style_ids(self):
         from application.vectorstore.faiss import get_vectorstore
 
-        assert get_vectorstore("65e8f6a8a7a96b1bdad4154f") == "indexes/65e8f6a8a7a96b1bdad4154f"
+        assert get_vectorstore("65e8f6a8a7a96b1bdad4154f") == os.path.join(
+            "indexes", "65e8f6a8a7a96b1bdad4154f"
+        )
 
 
 @pytest.mark.unit
@@ -426,7 +446,7 @@ class TestFaissStoreAddChunk:
     def test_add_chunk_with_metadata(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -457,7 +477,7 @@ class TestFaissStoreAddChunk:
     def test_add_chunk_default_metadata(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -489,7 +509,7 @@ class TestFaissStoreSaveLocalNoPath:
     def test_save_local_without_path(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "test_model"
+        _configure_settings(mock_settings)
         mock_emb = Mock(dimension=3)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -523,8 +543,9 @@ class TestFaissStoreAssertEmbeddingDimensionsMatch:
     def test_dimension_match_passes(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = (
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
+        _configure_settings(
+            mock_settings,
+            embeddings_name="huggingface_sentence-transformers/all-mpnet-base-v2",
         )
         mock_emb = Mock(dimension=768)
         mock_get_emb.return_value = mock_emb
@@ -549,7 +570,10 @@ class TestFaissStoreAssertEmbeddingDimensionsMatch:
     def test_non_huggingface_skips_dimension_check(
         self, mock_settings, mock_get_emb, mock_faiss, mock_storage_creator
     ):
-        mock_settings.EMBEDDINGS_NAME = "openai_text-embedding-ada-002"
+        _configure_settings(
+            mock_settings,
+            embeddings_name="openai_text-embedding-ada-002",
+        )
         mock_emb = Mock(dimension=1536)
         mock_get_emb.return_value = mock_emb
         mock_ds = Mock()
@@ -562,3 +586,167 @@ class TestFaissStoreAssertEmbeddingDimensionsMatch:
         # Should not raise since embedding name is not the huggingface one
         store = FaissStore(source_id="t", embeddings_key="k", docs_init=[Mock()])
         assert store is not None
+
+
+@pytest.mark.unit
+class TestFaissHnswIndex:
+    """HNSW-specific construction, search params, and delete-via-rebuild."""
+
+    @patch("application.vectorstore.faiss.StorageCreator")
+    @patch("application.vectorstore.faiss.FAISS")
+    @patch("application.vectorstore.faiss.build_faiss_index")
+    @patch("application.vectorstore.faiss.InMemoryDocstore")
+    @patch.object(
+        __import__("application.vectorstore.base", fromlist=["BaseVectorStore"]).BaseVectorStore,
+        "_get_embeddings",
+    )
+    @patch("application.vectorstore.faiss.settings")
+    def test_init_with_docs_uses_hnsw_index(
+        self,
+        mock_settings,
+        mock_get_emb,
+        mock_docstore,
+        mock_build_index,
+        mock_faiss,
+        mock_storage_creator,
+    ):
+        _configure_settings(mock_settings, index_type="hnsw")
+        mock_emb = Mock(dimension=3)
+        mock_get_emb.return_value = mock_emb
+        mock_index = Mock()
+        mock_index.d = 3
+        mock_build_index.return_value = mock_index
+        mock_store = Mock()
+        mock_store.index = mock_index
+        mock_faiss.return_value = mock_store
+        mock_storage_creator.get_storage.return_value = Mock()
+
+        from application.vectorstore.faiss import FaissStore
+
+        store = FaissStore(source_id="t", embeddings_key="k", docs_init=[Mock()])
+
+        mock_build_index.assert_called_once_with(3)
+        mock_faiss.assert_called_once()
+        mock_store.add_documents.assert_called_once()
+        mock_faiss.from_documents.assert_not_called()
+        assert store.docsearch is mock_store
+
+    @patch("application.vectorstore.faiss.StorageCreator")
+    @patch("application.vectorstore.faiss.FAISS")
+    @patch("application.vectorstore.faiss.apply_hnsw_search_params")
+    @patch.object(
+        __import__("application.vectorstore.base", fromlist=["BaseVectorStore"]).BaseVectorStore,
+        "_get_embeddings",
+    )
+    @patch("application.vectorstore.faiss.settings")
+    def test_load_local_applies_ef_search(
+        self,
+        mock_settings,
+        mock_get_emb,
+        mock_apply_ef,
+        mock_faiss,
+        mock_storage_creator,
+    ):
+        _configure_settings(mock_settings, index_type="hnsw")
+        mock_get_emb.return_value = Mock(dimension=3)
+        mock_storage = Mock()
+        mock_storage.file_exists.return_value = True
+        mock_storage.get_file.return_value = io.BytesIO(b"fake")
+        mock_storage_creator.get_storage.return_value = mock_storage
+        mock_ds = Mock()
+        mock_ds.index = Mock(d=3)
+        mock_faiss.load_local.return_value = mock_ds
+
+        from application.vectorstore.faiss import FaissStore
+
+        FaissStore(source_id="t", embeddings_key="k")
+        mock_apply_ef.assert_called_once_with(mock_ds.index)
+
+    @patch("application.vectorstore.faiss.StorageCreator")
+    @patch("application.vectorstore.faiss.FAISS")
+    @patch("application.vectorstore.faiss.build_faiss_index")
+    @patch("application.vectorstore.faiss.InMemoryDocstore")
+    @patch.object(
+        __import__("application.vectorstore.base", fromlist=["BaseVectorStore"]).BaseVectorStore,
+        "_get_embeddings",
+    )
+    @patch("application.vectorstore.faiss.settings")
+    def test_hnsw_delete_rebuilds_without_id(
+        self,
+        mock_settings,
+        mock_get_emb,
+        mock_docstore,
+        mock_build_index,
+        mock_faiss,
+        mock_storage_creator,
+    ):
+        _configure_settings(mock_settings, index_type="hnsw")
+        mock_get_emb.return_value = Mock(dimension=3)
+        mock_storage_creator.get_storage.return_value = Mock()
+
+        keep_doc = Mock(page_content="keep", metadata={})
+        drop_doc = Mock(page_content="drop", metadata={})
+
+        faiss = pytest.importorskip("faiss")
+        hnsw_index = faiss.IndexHNSWFlat(3, 16)
+        hnsw_index.hnsw.efConstruction = 200
+        hnsw_index.hnsw.efSearch = 64
+
+        original = Mock()
+        original.index = hnsw_index
+        original.docstore._dict = {"keep": keep_doc, "drop": drop_doc}
+        original.delete = Mock(side_effect=AssertionError("native delete must not run"))
+
+        rebuilt = Mock()
+        rebuilt.index = Mock(d=3)
+        mock_build_index.return_value = Mock(d=3)
+        mock_faiss.side_effect = [original, rebuilt]
+
+        from application.vectorstore.faiss import FaissStore
+
+        store = FaissStore(source_id="t", embeddings_key="k", docs_init=[Mock()])
+        store.docsearch = original
+
+        store.delete_index(["drop"])
+
+        mock_build_index.assert_called()
+        rebuilt.add_documents.assert_called_once()
+        args, kwargs = rebuilt.add_documents.call_args
+        assert args[0] == [keep_doc]
+        assert kwargs.get("ids") == ["keep"]
+        assert store.docsearch is rebuilt
+
+    def test_build_faiss_index_hnsw_sets_params(self):
+        faiss = pytest.importorskip("faiss")
+        with patch("application.vectorstore.faiss.settings") as mock_settings:
+            _configure_settings(mock_settings, index_type="hnsw")
+            mock_settings.FAISS_HNSW_M = 16
+            mock_settings.FAISS_HNSW_EF_CONSTRUCTION = 200
+            mock_settings.FAISS_HNSW_EF_SEARCH = 64
+
+            from application.vectorstore.faiss import build_faiss_index
+
+            index = build_faiss_index(8)
+            assert isinstance(index, faiss.IndexHNSWFlat)
+            assert index.d == 8
+            assert index.hnsw.efConstruction == 200
+            assert index.hnsw.efSearch == 64
+
+    def test_build_faiss_index_flat(self):
+        faiss = pytest.importorskip("faiss")
+        with patch("application.vectorstore.faiss.settings") as mock_settings:
+            _configure_settings(mock_settings, index_type="flat")
+
+            from application.vectorstore.faiss import build_faiss_index
+
+            index = build_faiss_index(4)
+            assert isinstance(index, faiss.IndexFlatL2)
+            assert index.d == 4
+
+    def test_build_faiss_index_rejects_unknown_type(self):
+        with patch("application.vectorstore.faiss.settings") as mock_settings:
+            mock_settings.FAISS_INDEX_TYPE = "ivf"
+            from application.vectorstore.faiss import build_faiss_index
+
+            with pytest.raises(ValueError, match="Unsupported FAISS_INDEX_TYPE"):
+                build_faiss_index(4)

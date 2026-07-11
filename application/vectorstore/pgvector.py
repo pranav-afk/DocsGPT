@@ -92,12 +92,31 @@ class PGVectorStore(BaseVectorStore):
             """
             cursor.execute(create_table_query)
             
-            # Create index for vector similarity search
-            index_query = f"""
-            CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_idx 
-            ON {self._table_name} USING ivfflat ({self._vector_column} vector_cosine_ops)
-            WITH (lists = 100);
-            """
+            # Create ANN index for vector similarity search.
+            # HNSW is the default: better incremental inserts, works on empty
+            # tables, and matches the FAISS HNSW path. IVFFlat remains available
+            # via PGVECTOR_INDEX_TYPE=ivfflat. Index names differ so upgrades
+            # from IVFFlat do not collide with CREATE INDEX IF NOT EXISTS.
+            index_type = (getattr(settings, "PGVECTOR_INDEX_TYPE", "hnsw") or "hnsw").strip().lower()
+            if index_type == "hnsw":
+                m = max(2, int(getattr(settings, "PGVECTOR_HNSW_M", 16)))
+                ef_construction = max(4, int(getattr(settings, "PGVECTOR_HNSW_EF_CONSTRUCTION", 64)))
+                index_query = f"""
+                CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_hnsw_idx
+                ON {self._table_name} USING hnsw ({self._vector_column} vector_cosine_ops)
+                WITH (m = {m}, ef_construction = {ef_construction});
+                """
+            elif index_type == "ivfflat":
+                lists = max(1, int(getattr(settings, "PGVECTOR_IVFFLAT_LISTS", 100)))
+                index_query = f"""
+                CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_idx
+                ON {self._table_name} USING ivfflat ({self._vector_column} vector_cosine_ops)
+                WITH (lists = {lists});
+                """
+            else:
+                raise ValueError(
+                    f"Unsupported PGVECTOR_INDEX_TYPE={index_type!r}; expected 'hnsw' or 'ivfflat'"
+                )
             cursor.execute(index_query)
             
             # Create index for source_id filtering
@@ -145,6 +164,12 @@ class PGVectorStore(BaseVectorStore):
         cursor = conn.cursor()
 
         try:
+            index_type = (getattr(settings, "PGVECTOR_INDEX_TYPE", "hnsw") or "hnsw").strip().lower()
+            if index_type == "hnsw":
+                # Session-local search width; higher → better recall, more latency.
+                ef_search = max(1, int(getattr(settings, "PGVECTOR_HNSW_EF_SEARCH", 40)))
+                cursor.execute("SET LOCAL hnsw.ef_search = %s", (ef_search,))
+
             # Use cosine distance for similarity search with proper vector formatting
             search_query = f"""
             SELECT {self._text_column}, {self._metadata_column},

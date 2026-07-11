@@ -28,6 +28,11 @@ def _make_store(
         mock_get_emb.return_value = mock_emb
         mock_settings.EMBEDDINGS_NAME = "test_model"
         mock_settings.PGVECTOR_CONNECTION_STRING = connection_string
+        mock_settings.PGVECTOR_INDEX_TYPE = "hnsw"
+        mock_settings.PGVECTOR_HNSW_M = 16
+        mock_settings.PGVECTOR_HNSW_EF_CONSTRUCTION = 64
+        mock_settings.PGVECTOR_HNSW_EF_SEARCH = 40
+        mock_settings.PGVECTOR_IVFFLAT_LISTS = 100
 
         from application.vectorstore.pgvector import PGVectorStore
 
@@ -95,6 +100,9 @@ class TestPGVectorStoreSearch:
         assert len(results) == 2
         assert results[0].page_content == "hello world"
         assert results[0].metadata == {"source": "test.txt"}
+        # HNSW search width is applied per query.
+        set_local = mock_cursor.execute.call_args_list[0]
+        assert "hnsw.ef_search" in set_local.args[0]
 
     def test_search_returns_empty_on_error(self):
         store, mock_conn, mock_cursor, _ = _make_store()
@@ -184,6 +192,30 @@ class TestPGVectorStoreKeywordSearch:
         )
         assert "documents_text_fts_idx" in executed
         assert "gin(to_tsvector('english'" in executed
+
+    def test_ensure_table_exists_creates_hnsw_index_by_default(self):
+        store, mock_conn, mock_cursor, _ = _make_store()
+        store._ensure_table_exists()
+
+        executed = " ".join(
+            str(call.args[0]) for call in mock_cursor.execute.call_args_list
+        )
+        assert "USING hnsw" in executed
+        assert "documents_embedding_hnsw_idx" in executed
+        assert "ef_construction" in executed
+
+    def test_ensure_table_exists_can_use_ivfflat(self):
+        store, mock_conn, mock_cursor, _ = _make_store()
+        with patch("application.vectorstore.pgvector.settings") as mock_settings:
+            mock_settings.PGVECTOR_INDEX_TYPE = "ivfflat"
+            mock_settings.PGVECTOR_IVFFLAT_LISTS = 100
+            store._ensure_table_exists()
+
+        executed = " ".join(
+            str(call.args[0]) for call in mock_cursor.execute.call_args_list
+        )
+        assert "USING ivfflat" in executed
+        assert "documents_embedding_idx" in executed
 
 
 @pytest.mark.unit

@@ -96,6 +96,24 @@ class Settings(BaseSettings):
     # default (100) drives worker RSS to ~3 GB on a mid-size PDF.
     DOCLING_PIPELINE_QUEUE_MAX_SIZE: int = 2
     VECTOR_STORE: str = "faiss"  #  "faiss" or "elasticsearch" or "qdrant" or "milvus" or "lancedb" or "pgvector"
+    # FAISS ANN index type for newly built indexes. Existing on-disk indexes
+    # load as-is (flat or hnsw). "hnsw" enables Hierarchical Navigable Small
+    # World approximate nearest-neighbor search; "flat" keeps exact L2 search.
+    FAISS_INDEX_TYPE: str = "hnsw"  # "hnsw" or "flat"
+    # HNSW graph degree (M) and build/search dynamic candidate lists.
+    # M=16 / ef_construction=200 are solid defaults for document retrieval;
+    # raise ef_search for higher recall at query time (more latency).
+    FAISS_HNSW_M: int = 16
+    FAISS_HNSW_EF_CONSTRUCTION: int = 200
+    FAISS_HNSW_EF_SEARCH: int = 64
+    # pgvector index type for the documents table vector column.
+    # "hnsw" (default) supports incremental inserts and empty-table creation;
+    # "ivfflat" keeps the legacy lists-based index.
+    PGVECTOR_INDEX_TYPE: str = "hnsw"  # "hnsw" or "ivfflat"
+    PGVECTOR_HNSW_M: int = 16
+    PGVECTOR_HNSW_EF_CONSTRUCTION: int = 64
+    PGVECTOR_HNSW_EF_SEARCH: int = 40
+    PGVECTOR_IVFFLAT_LISTS: int = 100
     # Allow-list of retriever keys an agent may use. Values must match the
     # ``RetrieverCreator.retrievers`` registry keys (``classic`` / ``default``),
     # NOT the legacy ``classic_rag`` label which never matched the registry.

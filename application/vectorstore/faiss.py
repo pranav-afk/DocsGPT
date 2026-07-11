@@ -1,13 +1,19 @@
+import logging
 import os
 import tempfile
 import io
+from typing import Any, List, Optional, Sequence
 
+import faiss
+from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 
 from application.core.settings import settings
 from application.parser.schema.base import Document
 from application.vectorstore.base import BaseVectorStore
 from application.storage.storage_creator import StorageCreator
+
+logger = logging.getLogger(__name__)
 
 
 def get_vectorstore(path: str) -> str:
@@ -40,6 +46,78 @@ def get_vectorstore(path: str) -> str:
     return candidate
 
 
+def _resolve_index_type() -> str:
+    """Return the configured FAISS index type (``hnsw`` or ``flat``)."""
+    index_type = (settings.FAISS_INDEX_TYPE or "hnsw").strip().lower()
+    if index_type not in {"hnsw", "flat"}:
+        raise ValueError(
+            f"Unsupported FAISS_INDEX_TYPE={index_type!r}; expected 'hnsw' or 'flat'"
+        )
+    return index_type
+
+
+def build_faiss_index(dimension: int) -> Any:
+    """Create a FAISS index for the configured algorithm.
+
+    Args:
+        dimension: Embedding dimensionality of vectors that will be stored.
+
+    Returns:
+        A FAISS index instance (``IndexHNSWFlat`` or ``IndexFlatL2``).
+    """
+    if dimension <= 0:
+        raise ValueError(f"Embedding dimension must be positive, got {dimension}")
+
+    index_type = _resolve_index_type()
+    if index_type == "flat":
+        return faiss.IndexFlatL2(dimension)
+
+    m = max(1, int(settings.FAISS_HNSW_M))
+    ef_construction = max(1, int(settings.FAISS_HNSW_EF_CONSTRUCTION))
+    ef_search = max(1, int(settings.FAISS_HNSW_EF_SEARCH))
+
+    # IndexHNSWFlat stores full vectors and builds an HNSW graph for ANN search.
+    index = faiss.IndexHNSWFlat(dimension, m)
+    index.hnsw.efConstruction = ef_construction
+    index.hnsw.efSearch = ef_search
+    logger.info(
+        "Built FAISS HNSW index dim=%s M=%s efConstruction=%s efSearch=%s",
+        dimension,
+        m,
+        ef_construction,
+        ef_search,
+    )
+    return index
+
+
+def _is_hnsw_index(index: Any) -> bool:
+    """Return True when ``index`` is a FAISS HNSW index.
+
+    Uses ``isinstance`` / type name rather than ``hasattr(..., "hnsw")`` so
+    unit-test ``Mock`` objects are not treated as HNSW (Mocks auto-create
+    attributes on access).
+    """
+    if index is None:
+        return False
+    if isinstance(index, faiss.IndexHNSWFlat):
+        return True
+    # Cover SWIG proxy type-name variants without treating Mock as HNSW.
+    name = getattr(type(index), "__name__", "")
+    return name == "IndexHNSWFlat"
+
+
+def apply_hnsw_search_params(index: Any) -> None:
+    """Apply runtime ``efSearch`` to a loaded HNSW index when present.
+
+    Args:
+        index: FAISS index loaded from storage or newly created.
+    """
+    if not _is_hnsw_index(index):
+        return
+    ef_search = max(1, int(settings.FAISS_HNSW_EF_SEARCH))
+    index.hnsw.efSearch = ef_search
+
+
 class FaissStore(BaseVectorStore):
     def __init__(self, source_id: str, embeddings_key: str, docs_init=None):
         super().__init__()
@@ -50,7 +128,7 @@ class FaissStore(BaseVectorStore):
 
         try:
             if docs_init:
-                self.docsearch = FAISS.from_documents(docs_init, self.embeddings)
+                self.docsearch = self._create_from_documents(docs_init)
             else:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     faiss_path = f"{self.path}/index.faiss"
@@ -78,13 +156,85 @@ class FaissStore(BaseVectorStore):
                     self.docsearch = FAISS.load_local(
                         temp_dir, self.embeddings, allow_dangerous_deserialization=True
                     )
+                    apply_hnsw_search_params(self.docsearch.index)
         except Exception as e:
             raise Exception(f"Error loading FAISS index: {str(e)}")
 
         self.assert_embedding_dimensions(self.embeddings)
 
+    def _embedding_dimension(self, docs: Optional[Sequence] = None) -> int:
+        """Resolve embedding dimension from the model or a sample document."""
+        dimension = getattr(self.embeddings, "dimension", None)
+        if dimension:
+            return int(dimension)
+        if docs:
+            sample = docs[0]
+            text = getattr(sample, "page_content", None)
+            if text is None and hasattr(sample, "text"):
+                text = sample.text
+            if text is None:
+                text = str(sample)
+            return len(self.embeddings.embed_query(text))
+        raise ValueError(
+            "Cannot determine embedding dimension without embeddings.dimension "
+            "or seed documents"
+        )
+
+    def _create_from_documents(self, docs: Sequence) -> FAISS:
+        """Build a FAISS store from documents using the configured index type.
+
+        Args:
+            docs: Seed documents (LangChain ``Document`` instances).
+
+        Returns:
+            A populated LangChain ``FAISS`` vector store.
+        """
+        index_type = _resolve_index_type()
+        if index_type == "flat":
+            # Preserve historical exact-search path.
+            return FAISS.from_documents(docs, self.embeddings)
+
+        dimension = self._embedding_dimension(docs)
+        index = build_faiss_index(dimension)
+        store = FAISS(
+            embedding_function=self.embeddings,
+            index=index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
+        if docs:
+            store.add_documents(list(docs))
+        return store
+
+    def _rebuild_without_ids(self, ids_to_delete: Sequence[str]) -> None:
+        """Rebuild the FAISS index excluding the given docstore ids.
+
+        HNSW indexes do not support ``remove_ids``; the standard workaround is
+        to soft-omit vectors by rebuilding from the remaining docstore entries.
+        """
+        delete_set = set(ids_to_delete)
+        remaining_docs = []
+        remaining_ids: List[str] = []
+        docstore_dict = getattr(self.docsearch.docstore, "_dict", {}) or {}
+        for doc_id, doc in docstore_dict.items():
+            if doc_id not in delete_set:
+                remaining_docs.append(doc)
+                remaining_ids.append(doc_id)
+
+        dimension = self.docsearch.index.d
+        index = build_faiss_index(dimension)
+        store = FAISS(
+            embedding_function=self.embeddings,
+            index=index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
+        if remaining_docs:
+            store.add_documents(remaining_docs, ids=remaining_ids)
+        self.docsearch = store
+
     def search(self, *args, **kwargs):
-        # FAISS has no relevance-threshold knob; drop it so the per-source
+        # FAISS has no relevance-threshold knobs; drop it so the per-source
         # score_threshold is safely ignored rather than crashing the forward.
         kwargs.pop("score_threshold", None)
         return self.docsearch.similarity_search(*args, **kwargs)
@@ -125,6 +275,15 @@ class FaissStore(BaseVectorStore):
         return True
 
     def delete_index(self, *args, **kwargs):
+        """Delete vectors by docstore id.
+
+        HNSW does not support in-place removal, so those indexes are rebuilt
+        without the deleted ids. Flat indexes use FAISS native ``remove_ids``.
+        """
+        ids = args[0] if args else kwargs.get("ids")
+        if ids is not None and _is_hnsw_index(self.docsearch.index):
+            self._rebuild_without_ids(list(ids))
+            return True
         return self.docsearch.delete(*args, **kwargs)
 
     def assert_embedding_dimensions(self, embeddings):
@@ -164,8 +323,6 @@ class FaissStore(BaseVectorStore):
         doc_id = self.docsearch.add_documents([doc])
         self._save_to_storage()
         return doc_id
-
-
 
     def delete_chunk(self, chunk_id):
         """Delete a chunk and save to storage."""
